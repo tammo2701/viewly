@@ -32,6 +32,9 @@ public partial class MainWindow : Window
     private MediaEntry? _current;
     private bool _updatingSlider;
     private bool _safeToUse;
+    private bool _isFullscreen;
+    private WindowStyle _savedWindowStyle;
+    private WindowState _savedWindowState;
 
     public MainWindow()
     {
@@ -44,14 +47,19 @@ public partial class MainWindow : Window
         Loaded += MainWindow_Loaded;
     }
 
-    private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         if (!IsOnRemovableDrive(_basePath, out var driveName))
         {
-            LibraryHint.Text = "Zum Schutz des Schul-PCs startet Viewly nur von einem als Wechseldatenträger erkannten USB-Laufwerk.";
+            EmptyLibraryTitle.Text = "USB-Stick nicht erkannt";
+            EmptyLibraryMessage.Text = "Viewly liest nur von einem als Wechseldatenträger erkannten Laufwerk. Es wurden keine Dateien gescannt oder angelegt.";
             StatusLabel.Text = "USB-Laufwerk nicht erkannt – es wurden keine Dateien gelesen oder angelegt.";
             MediaList.IsEnabled = false;
+            SearchBox.IsEnabled = false;
             RefreshButtonEnabled(false);
+            SettingsButton.IsEnabled = false;
+            SettingsMenuItem.IsEnabled = false;
+            SetPlaybackControls(false);
             return;
         }
 
@@ -68,13 +76,16 @@ public partial class MainWindow : Window
             _player = new MediaPlayer(_libVlc);
             VideoSurface.MediaPlayer = _player;
             _timer.Start();
-            ScanLibrary();
+            await ScanLibraryAsync();
             LibraryHint.Text = $"Laufwerk: {driveName}\nFilme & Serien liegen im Ordner Media.";
             StatusLabel.Text = "Bibliothek liegt auf dem USB-Stick. Wiedergabestände werden dort gespeichert.";
         }
         catch (Exception ex)
         {
             StatusLabel.Text = "Fehler beim Starten: " + ex.Message;
+            EmptyLibraryTitle.Text = "Viewly konnte nicht gestartet werden";
+            EmptyLibraryMessage.Text = ex.Message;
+            EmptyLibraryPanel.Visibility = Visibility.Visible;
             MessageBox.Show(this, ex.Message, "Viewly", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -118,11 +129,52 @@ public partial class MainWindow : Window
         catch (Exception ex) { StatusLabel.Text = "Fortschritt konnte nicht auf den Stick geschrieben werden: " + ex.Message; }
     }
 
-    private void ScanLibrary()
+    private async Task ScanLibraryAsync()
     {
         if (!_safeToUse) return;
+        _metadataCancellation?.Cancel();
         var selected = _current?.FullPath;
-        _allMedia.Clear();
+        EmptyLibraryTitle.Text = "Mediathek wird eingelesen";
+        EmptyLibraryMessage.Text = "Viewly durchsucht den Ordner Media auf dem USB-Stick.";
+        EmptyLibraryPanel.Visibility = Visibility.Visible;
+        StatusLabel.Text = "Mediathek wird eingelesen …";
+        RefreshButtonEnabled(false);
+        MediaList.IsEnabled = false;
+        SetPlaybackControls(false);
+        try
+        {
+            var found = await Task.Run(ScanMediaFiles);
+            _allMedia.Clear();
+            foreach (var entry in found) _allMedia.Add(entry);
+            MediaList.IsEnabled = true;
+            ApplySearch();
+            if (selected is not null)
+                MediaList.SelectedItem = MediaList.Items.Cast<MediaEntry>().FirstOrDefault(x => x.FullPath.Equals(selected, StringComparison.OrdinalIgnoreCase));
+            StatusLabel.Text = string.IsNullOrWhiteSpace(_tmdbToken)
+                ? $"{_allMedia.Count} Videos. TMDB ist noch nicht eingerichtet."
+                : $"{_allMedia.Count} Videos. Suche Cover und Filminfos bei TMDB …";
+            if (!string.IsNullOrWhiteSpace(_tmdbToken))
+            {
+                _metadataCancellation = new CancellationTokenSource();
+                _ = EnrichMetadataAsync(_metadataCancellation.Token);
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusLabel.Text = "Mediathek konnte nicht eingelesen werden: " + ex.Message;
+            EmptyLibraryTitle.Text = "Mediathek konnte nicht eingelesen werden";
+            EmptyLibraryMessage.Text = "Prüfe den Ordner Media und den freien Speicherplatz auf dem USB-Stick.";
+            EmptyLibraryPanel.Visibility = Visibility.Visible;
+        }
+        finally
+        {
+            RefreshButtonEnabled(true);
+        }
+    }
+
+    private List<MediaEntry> ScanMediaFiles()
+    {
+        var media = new List<MediaEntry>();
         var pending = new Stack<string>();
         pending.Push(_mediaRoot);
         while (pending.Count > 0)
@@ -144,21 +196,13 @@ public partial class MainWindow : Window
                         var relative = Path.GetRelativePath(_mediaRoot, child);
                         var title = Path.GetFileNameWithoutExtension(child);
                         var detail = MakeDetail(relative, info.Length);
-                        _allMedia.Add(new MediaEntry(child, title, detail));
+                        media.Add(new MediaEntry(child, title, detail));
                     }
                 }
                 catch { /* Ignore inaccessible or disappearing files; stay within Media. */ }
             }
         }
-        var sorted = _allMedia.OrderBy(x => x.Title, StringComparer.CurrentCultureIgnoreCase).ToArray();
-        _allMedia.Clear();
-        foreach (var entry in sorted) _allMedia.Add(entry);
-        ApplySearch();
-        if (selected is not null) MediaList.SelectedItem = MediaList.Items.Cast<MediaEntry>().FirstOrDefault(x => x.FullPath.Equals(selected, StringComparison.OrdinalIgnoreCase));
-        StatusLabel.Text = $"{_allMedia.Count} Videos gefunden in Media.";
-        _metadataCancellation?.Cancel();
-        _metadataCancellation = new CancellationTokenSource();
-        _ = EnrichMetadataAsync(_metadataCancellation.Token);
+        return media.OrderBy(x => x.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
     private void LoadSettings()
@@ -174,33 +218,47 @@ public partial class MainWindow : Window
     private async Task EnrichMetadataAsync(CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_tmdbToken)) return;
-        using var client = new TmdbClient(_dataRoot, _tmdbToken);
-        foreach (var entry in _allMedia.ToArray())
+        try
         {
-            if (cancellationToken.IsCancellationRequested) return;
-            try
+            using var client = new TmdbClient(_dataRoot, _tmdbToken);
+            foreach (var entry in _allMedia.ToArray())
             {
-                var match = await client.LookupAsync(entry.RelativePath, Path.GetFileNameWithoutExtension(entry.FullPath), cancellationToken);
-                if (match is not null)
+                if (cancellationToken.IsCancellationRequested) return;
+                try
                 {
-                    await Dispatcher.InvokeAsync(() =>
+                    var match = await client.LookupAsync(entry.RelativePath, Path.GetFileNameWithoutExtension(entry.FullPath), cancellationToken);
+                    if (match is not null)
                     {
-                        entry.Title = match.Title;
-                        entry.Overview = match.Overview;
-                        entry.CoverPath = match.CoverPath;
-                        var episode = Regex.Match(Path.GetFileNameWithoutExtension(entry.FullPath), @"(?i)(?:S\d{1,2}E\d{1,3}|\d{1,2}x\d{1,3})");
-                        var suffix = match.IsSeries && episode.Success ? $" · {episode.Value.ToUpperInvariant()}" : string.IsNullOrWhiteSpace(match.Year) ? "" : $" · {match.Year}";
-                        entry.Detail = entry.OriginalDetail + suffix;
-                        if (ReferenceEquals(MediaList.SelectedItem, entry)) LibraryHint.Text = match.Overview;
-                    });
-                    MediaList.Items.Refresh();
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            entry.Title = match.Title;
+                            entry.Overview = match.Overview;
+                            entry.CoverPath = match.CoverPath;
+                            var episode = Regex.Match(Path.GetFileNameWithoutExtension(entry.FullPath), @"(?i)(?:S\d{1,2}E\d{1,3}|\d{1,2}x\d{1,3})");
+                            var suffix = match.IsSeries && episode.Success ? $" · {episode.Value.ToUpperInvariant()}" : string.IsNullOrWhiteSpace(match.Year) ? "" : $" · {match.Year}";
+                            entry.Detail = entry.OriginalDetail + suffix;
+                            if (ReferenceEquals(MediaList.SelectedItem, entry)) LibraryHint.Text = string.IsNullOrWhiteSpace(match.Overview) ? entry.Detail : match.Overview;
+                        });
+                        MediaList.Items.Refresh();
+                    }
                 }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex)
+                {
+                    await Dispatcher.InvokeAsync(() => StatusLabel.Text = "TMDB-Suche fehlgeschlagen: " + ex.Message);
+                    return;
+                }
+                try { await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken); }
+                catch (OperationCanceledException) { return; }
             }
-            catch (OperationCanceledException) { return; }
-            catch { }
-            try { await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken); }
-            catch (OperationCanceledException) { return; }
         }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex)
+        {
+            await Dispatcher.InvokeAsync(() => StatusLabel.Text = "TMDB-Suche fehlgeschlagen: " + ex.Message);
+            return;
+        }
+        await Dispatcher.InvokeAsync(() => StatusLabel.Text = $"TMDB-Metadaten für {_allMedia.Count} Videos sind aktuell.");
     }
 
     private static string MakeDetail(string relativePath, long size)
@@ -216,32 +274,65 @@ public partial class MainWindow : Window
         MediaList.ItemsSource = string.IsNullOrWhiteSpace(term)
             ? _allMedia
             : _allMedia.Where(x => x.Title.Contains(term, StringComparison.CurrentCultureIgnoreCase) || x.Detail.Contains(term, StringComparison.CurrentCultureIgnoreCase)).ToArray();
+        UpdateLibraryState();
+    }
+
+    private void UpdateLibraryState()
+    {
+        if (MediaList.Items.Count > 0)
+        {
+            EmptyLibraryPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        EmptyLibraryPanel.Visibility = Visibility.Visible;
+        if (_allMedia.Count == 0)
+        {
+            EmptyLibraryTitle.Text = "Keine Videos gefunden";
+            EmptyLibraryMessage.Text = "Lege Videodateien in Media und aktualisiere danach die Mediathek.";
+        }
+        else
+        {
+            EmptyLibraryTitle.Text = "Keine Treffer";
+            EmptyLibraryMessage.Text = "Ändere den Suchbegriff, um Medien anzuzeigen.";
+        }
+    }
+
+    private void SetPlaybackControls(bool enabled)
+    {
+        ProgressSlider.IsEnabled = enabled;
+        PlayButton.IsEnabled = enabled;
+        BackButton.IsEnabled = enabled;
+        ForwardButton.IsEnabled = enabled;
+        FullscreenButton.IsEnabled = enabled;
+        PlayMenuItem.IsEnabled = enabled;
+        BackMenuItem.IsEnabled = enabled;
+        ForwardMenuItem.IsEnabled = enabled;
+        FullscreenMenuItem.IsEnabled = enabled;
     }
 
     private void RefreshButtonEnabled(bool enabled)
     {
-        foreach (var button in FindVisualChildren<Button>(this).Where(b => Equals(b.Content, "Mediathek aktualisieren"))) button.IsEnabled = enabled;
-    }
-
-    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
-    {
-        for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
-        {
-            var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
-            if (child is T typed) yield return typed;
-            foreach (var nested in FindVisualChildren<T>(child)) yield return nested;
-        }
+        RefreshButton.IsEnabled = enabled;
+        RefreshMenuItem.IsEnabled = enabled;
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => ApplySearch();
-    private void Refresh_Click(object sender, RoutedEventArgs e) => ScanLibrary();
+    private async void Refresh_Click(object sender, RoutedEventArgs e) => await ScanLibraryAsync();
 
     private void MediaList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (MediaList.SelectedItem is not MediaEntry entry || _player is null || _libVlc is null) return;
+        if (MediaList.SelectedItem is not MediaEntry entry)
+        {
+            _current = null;
+            SetPlaybackControls(false);
+            return;
+        }
+        if (_player is null || _libVlc is null) return;
         SaveCurrentPosition();
         _current = entry;
-        LibraryHint.Text = entry.Overview;
+        LibraryHint.Text = string.IsNullOrWhiteSpace(entry.Overview) ? entry.Detail : entry.Overview;
+        SetPlaybackControls(true);
+        VideoSurface.Visibility = Visibility.Visible;
         using var media = new Media(_libVlc, new Uri(entry.FullPath));
         _player.Play(media);
         PlayButton.Content = "❚❚  Pause";
@@ -284,7 +375,7 @@ public partial class MainWindow : Window
 
     private void ProgressSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (!_updatingSlider && _player is not null && _player.Length > 0 && Mouse.LeftButton == MouseButtonState.Pressed)
+        if (!_updatingSlider && _player is not null && _player.Length > 0)
             _player.Time = (long)ProgressSlider.Value;
     }
 
@@ -297,21 +388,65 @@ public partial class MainWindow : Window
 
     private void Fullscreen_Click(object sender, RoutedEventArgs e)
     {
-        WindowStyle = WindowStyle == WindowStyle.None ? WindowStyle.SingleBorderWindow : WindowStyle.None;
-        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+        if (_isFullscreen)
+        {
+            ExitFullscreen();
+            return;
+        }
+
+        _savedWindowStyle = WindowStyle;
+        _savedWindowState = WindowState;
+        _isFullscreen = true;
+        MenuRow.Height = new GridLength(0);
+        ToolbarRow.Height = new GridLength(0);
+        StatusRow.Height = new GridLength(0);
+        MainContentGrid.Margin = new Thickness(0);
+        LibraryColumn.Width = new GridLength(0);
+        ColumnGap.Width = new GridLength(0);
+        ControlRow.Height = new GridLength(0);
+        VideoStage.BorderThickness = new Thickness(0);
+        FullscreenExitButton.Visibility = Visibility.Visible;
+        WindowStyle = WindowStyle.None;
+        WindowState = WindowState.Maximized;
     }
 
-    private void Settings_Click(object sender, RoutedEventArgs e)
+    private void ExitFullscreen()
+    {
+        _isFullscreen = false;
+        FullscreenExitButton.Visibility = Visibility.Collapsed;
+        MenuRow.Height = new GridLength(25);
+        ToolbarRow.Height = new GridLength(52);
+        StatusRow.Height = new GridLength(28);
+        MainContentGrid.Margin = new Thickness(12);
+        LibraryColumn.Width = new GridLength(300);
+        ColumnGap.Width = new GridLength(12);
+        ControlRow.Height = new GridLength(86);
+        VideoStage.BorderThickness = new Thickness(1);
+        WindowStyle = _savedWindowStyle;
+        WindowState = _savedWindowState;
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_isFullscreen && e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            ExitFullscreen();
+        }
+    }
+
+    private async void Settings_Click(object sender, RoutedEventArgs e)
     {
         if (!_safeToUse) return;
         var dialog = new SettingsWindow(_settingsPath, _tmdbToken) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             _tmdbToken = dialog.SavedToken;
-            ScanLibrary();
-            StatusLabel.Text = string.IsNullOrWhiteSpace(_tmdbToken) ? "TMDB deaktiviert. Lokaler Scan bleibt aktiv." : "TMDB-Metadaten werden geladen und auf dem Stick gespeichert.";
+            await ScanLibraryAsync();
         }
     }
+
+    private void Exit_Click(object sender, RoutedEventArgs e) => Close();
 
     private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {

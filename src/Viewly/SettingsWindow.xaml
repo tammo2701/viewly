@@ -1,15 +1,16 @@
 <Window x:Class="Viewly.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Viewly – Einstellungen" Width="560" Height="360" ResizeMode="NoResize"
-        WindowStartupLocation="CenterOwner" Background="#171923" Foreground="#F5F5F7">
+        Title="Viewly: Einstellungen" Width="560" Height="380" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" Background="{StaticResource WindowBrush}"
+        Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI">
   <Grid Margin="24">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <TextBlock Text="TMDB Metadatensuche" FontSize="22" FontWeight="Bold" />
-    <TextBlock Grid.Row="1" Text="Mit einem TMDB Read Access Token kann Viewly Filmtitel erkennen und Cover sowie Beschreibungen auf den USB-Stick laden." TextWrapping="Wrap" Foreground="#B6B8C4" Margin="0,12,0,8" />
-    <TextBlock Grid.Row="2" Text="This product uses the TMDB API but is not endorsed or certified by TMDB." TextWrapping="Wrap" Foreground="#9A9DAB" FontSize="11" Margin="0,0,0,12" />
-    <TextBlock Grid.Row="3" Text="Your API Read Access Token (stored on this USB drive)" Foreground="#C6C7D0" Margin="0,4,0,5" />
-    <PasswordBox x:Name="TokenBox" Grid.Row="4" Height="38" VerticalAlignment="Top" Padding="9" Background="#20222D" Foreground="White" BorderBrush="#383B49" />
+    <TextBlock Grid.Row="1" Text="Mit deinem TMDB Read Access Token kann Viewly Filmtitel erkennen und Cover sowie Beschreibungen auf diesen USB-Stick laden." TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="0,10,0,8" />
+    <TextBlock Grid.Row="2" Text="This product uses the TMDB API but is not endorsed or certified by TMDB." TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,0,0,12" />
+    <TextBlock Grid.Row="3" Text="TMDB Read Access Token (wird auf diesem Stick gespeichert)" Foreground="{StaticResource TextBrush}" Margin="0,4,0,5" />
+    <PasswordBox x:Name="TokenBox" Grid.Row="4" Height="38" VerticalAlignment="Top" />
     <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
       <Button Content="Abbrechen" IsCancel="True" Click="Cancel_Click" />
       <Button Content="Token auf Stick speichern" Background="#8B5CF6" Click="Save_Click" />
