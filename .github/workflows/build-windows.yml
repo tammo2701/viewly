@@ -1,0 +1,33 @@
+name: Build portable Windows app
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish portable app
+        run: dotnet publish .\src\Viewly\Viewly.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:DebugType=None -o .\publish
+      - name: Keep only x64 VLC runtime
+        run: |
+          Remove-Item .\publish\libvlc\win-arm64 -Recurse -Force
+          Remove-Item .\publish\libvlc\win-x86 -Recurse -Force
+          New-Item -ItemType Directory -Force -Path .\publish\Media | Out-Null
+          Set-Content .\publish\Media\README.txt 'Place your movie and series video files in this folder. Viewly scans only this folder.'
+          Copy-Item .\README.md .\publish\README.txt
+          Copy-Item .\LICENSE .\publish\LICENSE.txt
+          Copy-Item .\THIRD-PARTY-NOTICES.txt .\publish\THIRD-PARTY-NOTICES.txt
+      - name: Package USB folder
+        run: Compress-Archive -Path .\publish\* -DestinationPath .\Viewly-portable-win-x64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Viewly-portable-win-x64
+          path: Viewly-portable-win-x64.zip
+          if-no-files-found: error

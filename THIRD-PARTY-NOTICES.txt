@@ -1,0 +1,15 @@
+Viewly bundles the following VideoLAN components under LGPL-2.1-or-later:
+
+- LibVLCSharp.WPF 3.10.2
+  Source: https://code.videolan.org/videolan/LibVLCSharp
+- VideoLAN.LibVLC.Windows 3.0.24 (LibVLC and VLC plug-ins)
+  Source: https://code.videolan.org/videolan/vlc
+  Windows package: https://code.videolan.org/videolan/libvlc-nuget
+
+The applicable LGPL-2.1-or-later license text is available at:
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+Viewly is distributed under the GNU General Public License v3. See LICENSE.
+
+TMDB data and images are used under TMDB's non-commercial terms. This product
+uses the TMDB API but is not endorsed or certified by TMDB.
